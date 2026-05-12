@@ -11,8 +11,8 @@ CoreDNS 插件：为 HTTPS (DoH) 服务器提供 `/resolve` JSON 解析接口，
 
 ```bash
 # 克隆 CoreDNS 源码
-git clone https://github.com/coredns/coredns.git /opt/coredns
-cd /opt/coredns
+git clone https://github.com/coredns/coredns.git  coredns
+cd coredns
 ```
 
 ### 1. 克隆插件
@@ -24,7 +24,7 @@ git clone https://github.com/qist/resolve.git plugin/resolve
 ### 2. 应用上游补丁
 
 ```bash
-cd /opt/coredns
+cd  coredns
 git apply plugin/resolve/server_https.patch
 ```
 
