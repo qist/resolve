@@ -99,7 +99,7 @@ https://.:443 {
 | 指令 | 说明 |
 |------|------|
 | `resolve` | 启用 `/resolve` JSON 接口 |
-| `edns0 on` | 自动注入 EDNS0 Client Subnet |
+| `edns0 on` | 自动注入 EDNS0 Client Subnet（默认） |
 | `edns0 off` | 关闭自动注入，仅 `cip` 参数生效 |
 
 ## 接口
@@ -157,10 +157,12 @@ GET /resolve?name=<domain>&type=<rrtype>&cip=<client_ip>
 
 ### 行为
 
+默认开启（不写 `edns0` 指令等同于 `edns0 on`）。
+
 | edns0 | cip | /resolve | /dns-query |
 |-------|-----|----------|-----------|
-| on | 无 | 自动提取客户端 IP | 自动提取客户端 IP |
-| on | 有 | 以 cip 为准 | 自动提取客户端 IP |
+| on（默认） | 无 | 自动提取客户端 IP | 自动提取客户端 IP |
+| on（默认） | 有 | 以 cip 为准 | 自动提取客户端 IP |
 | off | 无 | 不注入 | 不注入 |
 | off | 有 | 以 cip 为准 | 不注入 |
 

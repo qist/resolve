@@ -1,5 +1,5 @@
 diff --git a/core/dnsserver/config.go b/core/dnsserver/config.go
-index c46b2fb77..e3d3feb55 100644
+index c46b2fb77..bbdfefb4c 100644
 --- a/core/dnsserver/config.go
 +++ b/core/dnsserver/config.go
 @@ -110,6 +110,9 @@ type Config struct {
@@ -7,11 +7,31 @@ index c46b2fb77..e3d3feb55 100644
  	IdleTimeout  time.Duration
  
 +	// ResolveEDNS0 controls whether EDNS0 Client Subnet is injected for /resolve and /dns-query.
-+	ResolveEDNS0 bool
++	ResolveEDNS0 bool // default: true
 +
  	// TSIG secrets, [name]key.
  	TsigSecret map[string]string
  
+diff --git a/core/dnsserver/register.go b/core/dnsserver/register.go
+index 3c7610b83..5452c56f6 100644
+--- a/core/dnsserver/register.go
++++ b/core/dnsserver/register.go
+@@ -113,10 +113,11 @@ func (h *dnsContext) InspectServerBlocks(_sourceFile string, serverBlocks []cadd
+ 			s.Keys[ik] = za.String()
+ 			// Save the config to our master list, and key it for lookups.
+ 			cfg := &Config{
+-				Zone:        za.Zone,
+-				ListenHosts: []string{""},
+-				Port:        za.Port,
+-				Transport:   za.Transport,
++				Zone:         za.Zone,
++				ListenHosts:  []string{""},
++				Port:         za.Port,
++				Transport:    za.Transport,
++				ResolveEDNS0: true,
+ 			}
+ 
+ 			// Set reference to the first config in the current block.
 diff --git a/core/dnsserver/server_https.go b/core/dnsserver/server_https.go
 index 2f0746b0d..91ed1171a 100644
 --- a/core/dnsserver/server_https.go
