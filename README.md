@@ -25,7 +25,7 @@ git clone https://github.com/qist/resolve.git plugin/resolve
 
 ```bash
 cd  coredns
-git apply plugin/resolve/server_https.patch
+git apply --3way plugin/resolve/server_https.patch
 ```
 
 补丁修改以下文件：
