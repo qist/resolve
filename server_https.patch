@@ -1,0 +1,329 @@
+diff --git a/core/dnsserver/config.go b/core/dnsserver/config.go
+index c46b2fb77..e3d3feb55 100644
+--- a/core/dnsserver/config.go
++++ b/core/dnsserver/config.go
+@@ -110,6 +110,9 @@ type Config struct {
+ 	WriteTimeout time.Duration
+ 	IdleTimeout  time.Duration
+ 
++	// ResolveEDNS0 controls whether EDNS0 Client Subnet is injected for /resolve and /dns-query.
++	ResolveEDNS0 bool
++
+ 	// TSIG secrets, [name]key.
+ 	TsigSecret map[string]string
+ 
+diff --git a/core/dnsserver/server_https.go b/core/dnsserver/server_https.go
+index 2f0746b0d..91ed1171a 100644
+--- a/core/dnsserver/server_https.go
++++ b/core/dnsserver/server_https.go
+@@ -3,11 +3,14 @@ package dnsserver
+ import (
+ 	"context"
+ 	"crypto/tls"
++	"encoding/json"
+ 	"fmt"
++	"math"
+ 	stdlog "log"
+ 	"net"
+ 	"net/http"
+ 	"strconv"
++	"strings"
+ 	"time"
+ 
+ 	"github.com/coredns/caddy"
+@@ -52,6 +55,14 @@ func (l *loggerAdapter) Write(p []byte) (n int, err error) {
+ // Plugins can access the original HTTP request to retrieve headers, client IP, and metadata.
+ type HTTPRequestKey struct{}
+ 
++// HTTPResponseWriterKey is the context key for the HTTP response writer when processing DNS-over-HTTPS.
++// Plugins can use it to write HTTP responses directly (e.g., JSON).
++type HTTPResponseWriterKey struct{}
++
++// HTTPHandledKey is the context key to signal that the HTTP response has already been written
++// by a plugin (e.g., the resolve plugin writing JSON). ServeHTTP will skip writing the DNS response.
++type HTTPHandledKey struct{}
++
+ // connAddrKey is the context key for the per-connection local address set by ConnContext.
+ type connAddrKey struct{}
+ 
+@@ -193,6 +204,12 @@ func (s *ServerHTTPS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+ 		return
+ 	}
+ 
++	// Handle /resolve endpoint directly — JSON response, no DoH conversion.
++	if r.URL.Path == "/resolve" {
++		s.serveResolve(w, r)
++		return
++	}
++
+ 	msg, raw, err := doh.RequestToMsgWire(r)
+ 	if err != nil {
+ 		http.Error(w, err.Error(), http.StatusBadRequest)
+@@ -200,6 +217,10 @@ func (s *ServerHTTPS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+ 		return
+ 	}
+ 
++	if s.resolveEDNS0() {
++		addECSFromHTTP(msg, r)
++	}
++
+ 	// Create a DoHWriter with the correct addresses in it.
+ 	h, p, _ := net.SplitHostPort(r.RemoteAddr)
+ 	port, _ := strconv.Atoi(p)
+@@ -228,6 +249,7 @@ func (s *ServerHTTPS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+ 	ctx := context.WithValue(r.Context(), Key{}, s.Server)
+ 	ctx = context.WithValue(ctx, LoopKey{}, 0)
+ 	ctx = context.WithValue(ctx, HTTPRequestKey{}, r)
++	ctx = context.WithValue(ctx, HTTPResponseWriterKey{}, w)
+ 	s.ServeDNS(ctx, dw, msg)
+ 
+ 	// See section 4.2.1 of RFC 8484.
+@@ -257,6 +279,236 @@ func (s *ServerHTTPS) countResponse(status int) {
+ 	vars.HTTPSResponsesCount.WithLabelValues(s.Addr, strconv.Itoa(status)).Inc()
+ }
+ 
++// resolveResult represents a JSON DNS response for the /resolve endpoint.
++type resolveResult struct {
++	Name   string        `json:"Name"`
++	Type   string        `json:"Type"`
++	Status int           `json:"Status"`
++	TTL    uint32        `json:"TTL,omitempty"`
++	Answer []resolveAnswer `json:"Answer"`
++}
++
++type resolveAnswer struct {
++	Name string `json:"name"`
++	Type string `json:"type"`
++	TTL  uint32 `json:"ttl"`
++	Data string `json:"data"`
++}
++
++// serveResolve handles /resolve requests — builds a DNS query from HTTP params,
++// runs it through the plugin chain, and returns JSON.
++func (s *ServerHTTPS) serveResolve(w http.ResponseWriter, r *http.Request) {
++	if r.Method != http.MethodGet {
++		resolveWriteJSON(w, http.StatusMethodNotAllowed, map[string]string{"Error": "method not allowed"})
++		return
++	}
++
++	name := r.URL.Query().Get("name")
++	if name == "" {
++		resolveWriteJSON(w, http.StatusBadRequest, map[string]string{"Error": "missing required 'name' parameter"})
++		return
++	}
++
++	qtypeStr := r.URL.Query().Get("type")
++	if qtypeStr == "" {
++		qtypeStr = "A"
++	}
++	qtype, ok := dns.StringToType[strings.ToUpper(qtypeStr)]
++	if !ok {
++		resolveWriteJSON(w, http.StatusBadRequest, map[string]string{"Error": "invalid query type"})
++		return
++	}
++
++	if !strings.HasSuffix(name, ".") {
++		name = name + "."
++	}
++
++	var clientIP net.IP
++	if cip := r.URL.Query().Get("cip"); cip != "" {
++		clientIP = net.ParseIP(cip)
++	} else if s.resolveEDNS0() {
++		clientIP = clientIPFromRequest(r)
++	}
++
++	msg := new(dns.Msg)
++	msg.SetQuestion(name, qtype)
++	msg.RecursionDesired = true
++
++	if clientIP != nil {
++		msg.SetEdns0(4096, false)
++		if opt := msg.IsEdns0(); opt != nil {
++			family := uint16(1)
++			mask := uint8(24)
++			if clientIP.To4() == nil {
++				family = 2
++				mask = 48
++			}
++			opt.Option = append(opt.Option, &dns.EDNS0_SUBNET{
++				Code:          dns.EDNS0SUBNET,
++				Family:        family,
++				SourceNetmask: mask,
++				SourceScope:   0,
++				Address:       clientIP,
++			})
++		}
++	}
++
++	ctx := context.WithValue(r.Context(), Key{}, s.Server)
++	ctx = context.WithValue(ctx, LoopKey{}, 0)
++	ctx = context.WithValue(ctx, HTTPRequestKey{}, r)
++
++	dw := &DoHWriter{
++		laddr: s.localAddr(r),
++	}
++	h, p, _ := net.SplitHostPort(r.RemoteAddr)
++	port, _ := strconv.Atoi(p)
++	dw.raddr = &net.TCPAddr{IP: net.ParseIP(h), Port: port}
++
++	s.ServeDNS(ctx, dw, msg)
++
++	if dw.Msg == nil {
++		resolveWriteJSON(w, http.StatusInternalServerError, map[string]string{"Error": "no response"})
++		return
++	}
++
++	result := resolveToJSON(dw.Msg, qtypeStr)
++	resolveWriteJSON(w, http.StatusOK, result)
++}
++
++func resolveWriteJSON(w http.ResponseWriter, code int, v interface{}) {
++	w.Header().Set("Content-Type", "application/json")
++	w.WriteHeader(code)
++	json.NewEncoder(w).Encode(v)
++}
++
++func resolveToJSON(msg *dns.Msg, qtypeStr string) resolveResult {
++	result := resolveResult{
++		Name:   msg.Question[0].Name,
++		Type:   qtypeStr,
++		Status: msg.Rcode,
++		Answer: []resolveAnswer{},
++	}
++	if msg.Rcode != dns.RcodeSuccess {
++		return result
++	}
++	var minTTL uint32 = math.MaxUint32
++	for _, rr := range msg.Answer {
++		result.Answer = append(result.Answer, resolveAnswer{
++			Name: rr.Header().Name,
++			Type: dns.TypeToString[rr.Header().Rrtype],
++			TTL:  rr.Header().Ttl,
++			Data: resolveRRData(rr),
++		})
++		if rr.Header().Ttl < minTTL {
++			minTTL = rr.Header().Ttl
++		}
++	}
++	if len(result.Answer) > 0 {
++		result.TTL = minTTL
++	}
++	return result
++}
++
++func resolveRRData(rr dns.RR) string {
++	switch v := rr.(type) {
++	case *dns.A:
++		return v.A.String()
++	case *dns.AAAA:
++		return v.AAAA.String()
++	case *dns.CNAME:
++		return v.Target
++	case *dns.MX:
++		return v.Mx
++	case *dns.NS:
++		return v.Ns
++	case *dns.TXT:
++		return strings.Join(v.Txt, " ")
++	case *dns.SRV:
++		return v.Target
++	case *dns.SOA:
++		return v.Ns
++	case *dns.PTR:
++		return v.Ptr
++	case *dns.CAA:
++		return v.Value
++	default:
++		s := rr.String()
++		header := rr.Header().String()
++		if strings.HasPrefix(s, header) {
++			return strings.TrimSpace(s[len(header):])
++		}
++		return s
++	}
++}
++
++func (s *ServerHTTPS) resolveEDNS0() bool {
++	for _, z := range s.zones {
++		for _, conf := range z {
++			if conf.ResolveEDNS0 {
++				return true
++			}
++		}
++	}
++	return false
++}
++
++// addECSFromHTTP injects EDNS0 Client Subnet into the DNS message based on the HTTP client IP.
++// It checks X-Forwarded-For, X-Real-IP headers for reverse proxy support.
++// If the message already contains an EDNS0 Client Subnet option, it is left unchanged.
++func addECSFromHTTP(msg *dns.Msg, r *http.Request) {
++	clientIP := clientIPFromRequest(r)
++	if clientIP == nil {
++		return
++	}
++
++	opt := msg.IsEdns0()
++	if opt == nil {
++		msg.SetEdns0(4096, false)
++		opt = msg.IsEdns0()
++		if opt == nil {
++			return
++		}
++	}
++
++	for _, o := range opt.Option {
++		if _, ok := o.(*dns.EDNS0_SUBNET); ok {
++			return
++		}
++	}
++
++	family := uint16(1)
++	mask := uint8(24)
++	if clientIP.To4() == nil {
++		family = 2
++		mask = 48
++	}
++	opt.Option = append(opt.Option, &dns.EDNS0_SUBNET{
++		Code:          dns.EDNS0SUBNET,
++		Family:        family,
++		SourceNetmask: mask,
++		SourceScope:   0,
++		Address:       clientIP,
++	})
++}
++
++func clientIPFromRequest(r *http.Request) net.IP {
++	if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
++		if addr := net.ParseIP(strings.TrimSpace(strings.Split(ip, ",")[0])); addr != nil {
++			return addr
++		}
++	}
++	if ip := r.Header.Get("X-Real-IP"); ip != "" {
++		if addr := net.ParseIP(strings.TrimSpace(ip)); addr != nil {
++			return addr
++		}
++	}
++	host, _, err := net.SplitHostPort(r.RemoteAddr)
++	if err != nil {
++		host = r.RemoteAddr
++	}
++	return net.ParseIP(host)
++}
++
+ // Shutdown stops the server (non gracefully).
+ func (s *ServerHTTPS) Shutdown() error {
+ 	if s.httpsServer != nil {
+
+--- a/plugin.cfg
++++ b/plugin.cfg
+@@ -29,6 +29,8 @@ quic:quic
+ grpc_server:grpc_server
+ https:https
+ https3:https3
++edns0:resolve
++resolve:resolve
+ timeouts:timeouts
+ multisocket:multisocket
+ reload:reload
