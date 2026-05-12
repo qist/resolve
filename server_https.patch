@@ -1,13 +1,16 @@
 diff --git a/core/dnsserver/config.go b/core/dnsserver/config.go
-index c46b2fb77..bbdfefb4c 100644
+index c46b2fb77..3ecb71b3f 100644
 --- a/core/dnsserver/config.go
 +++ b/core/dnsserver/config.go
-@@ -110,6 +110,9 @@ type Config struct {
+@@ -110,6 +110,12 @@ type Config struct {
  	WriteTimeout time.Duration
  	IdleTimeout  time.Duration
  
 +	// ResolveEDNS0 controls whether EDNS0 Client Subnet is injected for /resolve and /dns-query.
 +	ResolveEDNS0 bool // default: true
++
++	// ResolveNoCache controls whether /resolve bypasses the cache plugin.
++	ResolveNoCache bool // default: false
 +
  	// TSIG secrets, [name]key.
  	TsigSecret map[string]string
@@ -33,10 +36,10 @@ index 3c7610b83..5452c56f6 100644
  
  			// Set reference to the first config in the current block.
 diff --git a/core/dnsserver/server_https.go b/core/dnsserver/server_https.go
-index 2f0746b0d..91ed1171a 100644
+index 2f0746b0d..c470d6d77 100644
 --- a/core/dnsserver/server_https.go
 +++ b/core/dnsserver/server_https.go
-@@ -3,11 +3,14 @@ package dnsserver
+@@ -3,14 +3,18 @@ package dnsserver
  import (
  	"context"
  	"crypto/tls"
@@ -51,7 +54,11 @@ index 2f0746b0d..91ed1171a 100644
  	"time"
  
  	"github.com/coredns/caddy"
-@@ -52,6 +55,14 @@ func (l *loggerAdapter) Write(p []byte) (n int, err error) {
++	"github.com/coredns/coredns/plugin"
+ 	"github.com/coredns/coredns/plugin/metrics/vars"
+ 	"github.com/coredns/coredns/plugin/pkg/dnsutil"
+ 	"github.com/coredns/coredns/plugin/pkg/doh"
+@@ -52,6 +56,14 @@ func (l *loggerAdapter) Write(p []byte) (n int, err error) {
  // Plugins can access the original HTTP request to retrieve headers, client IP, and metadata.
  type HTTPRequestKey struct{}
  
@@ -66,7 +73,7 @@ index 2f0746b0d..91ed1171a 100644
  // connAddrKey is the context key for the per-connection local address set by ConnContext.
  type connAddrKey struct{}
  
-@@ -193,6 +204,12 @@ func (s *ServerHTTPS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+@@ -193,6 +205,12 @@ func (s *ServerHTTPS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
  		return
  	}
  
@@ -79,7 +86,7 @@ index 2f0746b0d..91ed1171a 100644
  	msg, raw, err := doh.RequestToMsgWire(r)
  	if err != nil {
  		http.Error(w, err.Error(), http.StatusBadRequest)
-@@ -200,6 +217,10 @@ func (s *ServerHTTPS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+@@ -200,6 +218,10 @@ func (s *ServerHTTPS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
  		return
  	}
  
@@ -90,15 +97,18 @@ index 2f0746b0d..91ed1171a 100644
  	// Create a DoHWriter with the correct addresses in it.
  	h, p, _ := net.SplitHostPort(r.RemoteAddr)
  	port, _ := strconv.Atoi(p)
-@@ -228,6 +249,7 @@ func (s *ServerHTTPS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+@@ -228,6 +250,10 @@ func (s *ServerHTTPS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
  	ctx := context.WithValue(r.Context(), Key{}, s.Server)
  	ctx = context.WithValue(ctx, LoopKey{}, 0)
  	ctx = context.WithValue(ctx, HTTPRequestKey{}, r)
 +	ctx = context.WithValue(ctx, HTTPResponseWriterKey{}, w)
++	if s.resolveNoCache() {
++		ctx = plugin.WithCacheBypass(ctx)
++	}
  	s.ServeDNS(ctx, dw, msg)
  
  	// See section 4.2.1 of RFC 8484.
-@@ -257,6 +279,236 @@ func (s *ServerHTTPS) countResponse(status int) {
+@@ -257,6 +283,250 @@ func (s *ServerHTTPS) countResponse(status int) {
  	vars.HTTPSResponsesCount.WithLabelValues(s.Addr, strconv.Itoa(status)).Inc()
  }
  
@@ -179,6 +189,9 @@ index 2f0746b0d..91ed1171a 100644
 +	ctx := context.WithValue(r.Context(), Key{}, s.Server)
 +	ctx = context.WithValue(ctx, LoopKey{}, 0)
 +	ctx = context.WithValue(ctx, HTTPRequestKey{}, r)
++	if s.resolveNoCache() {
++		ctx = plugin.WithCacheBypass(ctx)
++	}
 +
 +	dw := &DoHWriter{
 +		laddr: s.localAddr(r),
@@ -275,6 +288,17 @@ index 2f0746b0d..91ed1171a 100644
 +	return false
 +}
 +
++func (s *ServerHTTPS) resolveNoCache() bool {
++	for _, z := range s.zones {
++		for _, conf := range z {
++			if conf.ResolveNoCache {
++				return true
++			}
++		}
++	}
++	return false
++}
++
 +// addECSFromHTTP injects EDNS0 Client Subnet into the DNS message based on the HTTP client IP.
 +// It checks X-Forwarded-For, X-Real-IP headers for reverse proxy support.
 +// If the message already contains an EDNS0 Client Subnet option, it is left unchanged.
@@ -335,7 +359,50 @@ index 2f0746b0d..91ed1171a 100644
  // Shutdown stops the server (non gracefully).
  func (s *ServerHTTPS) Shutdown() error {
  	if s.httpsServer != nil {
-
+diff --git a/plugin/cache/handler.go b/plugin/cache/handler.go
+index 5f561118d..d5c449a0f 100644
+--- a/plugin/cache/handler.go
++++ b/plugin/cache/handler.go
+@@ -21,6 +21,10 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg)
+ 	cd := r.CheckingDisabled
+ 	ad := r.AuthenticatedData
+ 
++	if plugin.IsCacheBypass(ctx) {
++		return plugin.NextOrFailure(c.Name(), c.Next, ctx, w, rc)
++	}
++
+ 	zone := plugin.Zones(c.Zones).Matches(state.Name())
+ 	if zone == "" {
+ 		return plugin.NextOrFailure(c.Name(), c.Next, ctx, w, rc)
+diff --git a/plugin/plugin.go b/plugin/plugin.go
+index 20e9c2628..a19b1d965 100644
+--- a/plugin/plugin.go
++++ b/plugin/plugin.go
+@@ -153,6 +153,22 @@ func ClientWrite(rcode int) bool {
+ // Namespace is the namespace used for the metrics.
+ const Namespace = "coredns"
+ 
++// CacheBypassKey is the context key to signal that the cache plugin should skip
++// both cache lookup and cache storage for this request. Set by /resolve endpoint
++// to ensure fresh results for every query.
++type CacheBypassKey struct{}
++
++// WithCacheBypass returns a context that instructs the cache plugin to bypass caching.
++func WithCacheBypass(ctx context.Context) context.Context {
++	return context.WithValue(ctx, CacheBypassKey{}, true)
++}
++
++// IsCacheBypass returns true if the context has been marked to bypass caching.
++func IsCacheBypass(ctx context.Context) bool {
++	v, _ := ctx.Value(CacheBypassKey{}).(bool)
++	return v
++}
++
+ // TimeBuckets is based on Prometheus client_golang prometheus.DefBuckets
+ var TimeBuckets = prometheus.ExponentialBuckets(0.00025, 2, 16) // from 0.25ms to 8 seconds
+ 
+diff --git a/plugin.cfg b/plugin.cfg
+index a4fc637c0..72b3c7b35 100644
 --- a/plugin.cfg
 +++ b/plugin.cfg
 @@ -29,6 +29,8 @@ quic:quic

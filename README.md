@@ -86,7 +86,7 @@ sed -i '/tls .*/a\    edns0 on\n    resolve' /path/to/Corefile
 https://.:443 {
     tls /path/to/fullchain.crt /path/to/private.key
     edns0 on
-    resolve
+    resolve nocache
     forward . 8.8.8.8 1.1.1.1 223.5.5.5 {
         max_concurrent 1000
     }
@@ -100,6 +100,7 @@ https://.:443 {
 | 指令 | 说明 |
 |------|------|
 | `resolve` | 启用 `/resolve` JSON 接口 |
+| `resolve nocache` | 启用 `/resolve` 并跳过缓存（`/resolve` 和 `/dns-query` 均不走 cache 插件） |
 | `edns0 on` | 自动注入 EDNS0 Client Subnet（默认） |
 | `edns0 off` | 关闭自动注入，仅 `cip` 参数生效 |
 
@@ -243,6 +244,9 @@ plugin/resolve/
 
 | 文件 | 行数 | 改动 |
 |------|------|------|
-| `core/dnsserver/config.go` | +3 | 新增 `ResolveEDNS0 bool` 字段 |
-| `core/dnsserver/server_https.go` | +252 | serveResolve()、addECSFromHTTP()、clientIPFromRequest()、resolveEDNS0() |
+| `core/dnsserver/config.go` | +6 | 新增 `ResolveEDNS0`、`ResolveNoCache` 字段 |
+| `core/dnsserver/register.go` | +1 | 默认 `ResolveEDNS0: true` |
+| `core/dnsserver/server_https.go` | +260 | serveResolve()、addECSFromHTTP()、clientIPFromRequest()、resolveEDNS0()、resolveNoCache()、cache bypass |
+| `plugin/plugin.go` | +16 | CacheBypassKey、WithCacheBypass()、IsCacheBypass() |
+| `plugin/cache/handler.go` | +4 | 检查 CacheBypassKey 跳过缓存 |
 | `plugin.cfg` | +2 | `edns0:resolve`、`resolve:resolve` |

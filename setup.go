@@ -20,6 +20,18 @@ func init() {
 func setupResolve(c *caddy.Controller) error {
 	conf := dnsserver.GetConfig(c)
 
+	for c.Next() {
+		args := c.RemainingArgs()
+		for _, arg := range args {
+			switch arg {
+			case "nocache":
+				conf.ResolveNoCache = true
+			default:
+				return c.ArgErr()
+			}
+		}
+	}
+
 	if conf.Transport == transport.HTTPS || conf.Transport == transport.HTTPS3 {
 		origValidator := conf.HTTPRequestValidateFunc
 		conf.HTTPRequestValidateFunc = func(r *http.Request) bool {
