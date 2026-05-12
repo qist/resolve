@@ -36,7 +36,8 @@ git apply plugin/resolve/server_https.patch
 
 ```bash
 # 在 https3 行后添加 edns0 和 resolve 指令
-sed -i '/^https3:https3$/a edns0:resolve\nresolve:resolve' plugin.cfg
+#sed -i '/^https3:https3$/a edns0:resolve\nresolve:resolve' plugin.cfg
+补丁里面添加了 不需要 手动添加
 ```
 
 验证：
