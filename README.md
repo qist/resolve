@@ -56,7 +56,7 @@ grep -n "edns0\|resolve" plugin.cfg
 go generate
 
 # 编译
-go build -o coredns .
+make
 
 # 验证二进制包含 resolve 插件
 strings ./coredns | grep "resolve" | head -3
