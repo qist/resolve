@@ -161,10 +161,10 @@ index 2f0746b0d..91ed1171a 100644
 +		msg.SetEdns0(4096, false)
 +		if opt := msg.IsEdns0(); opt != nil {
 +			family := uint16(1)
-+			mask := uint8(32)
++			mask := uint8(24)
 +			if clientIP.To4() == nil {
 +				family = 2
-+				mask = 128
++				mask = 48
 +			}
 +			opt.Option = append(opt.Option, &dns.EDNS0_SUBNET{
 +				Code:          dns.EDNS0SUBNET,
@@ -300,10 +300,10 @@ index 2f0746b0d..91ed1171a 100644
 +	}
 +
 +	family := uint16(1)
-+	mask := uint8(32)
++	mask := uint8(24)
 +	if clientIP.To4() == nil {
 +		family = 2
-+		mask = 128
++		mask = 48
 +	}
 +	opt.Option = append(opt.Option, &dns.EDNS0_SUBNET{
 +		Code:          dns.EDNS0SUBNET,
