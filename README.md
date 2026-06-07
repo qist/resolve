@@ -2,6 +2,12 @@
 
 CoreDNS 插件：为 HTTPS (DoH) 服务器提供 `/resolve` JSON 解析接口，支持 EDNS0 Client Subnet。
 
+## Download
+
+编译好的二进制文件（含 resolve 插件）：
+
+https://github.com/qist/coredns-plugins-suite/releases
+
 ## 编译安装
 
 ### 前置条件
