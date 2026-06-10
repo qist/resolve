@@ -33,7 +33,7 @@ index 3c7610b83..5452c56f6 100644
  
  			// Set reference to the first config in the current block.
 diff --git a/core/dnsserver/server_https.go b/core/dnsserver/server_https.go
-index 2f0746b0d..91ed1171a 100644
+index 334d4cffb..ca7aa9baf 100644
 --- a/core/dnsserver/server_https.go
 +++ b/core/dnsserver/server_https.go
 @@ -3,11 +3,14 @@ package dnsserver
@@ -51,7 +51,7 @@ index 2f0746b0d..91ed1171a 100644
  	"time"
  
  	"github.com/coredns/caddy"
-@@ -52,6 +55,14 @@ func (l *loggerAdapter) Write(p []byte) (n int, err error) {
+@@ -52,6 +55,17 @@ func (l *loggerAdapter) Write(p []byte) (n int, err error) {
  // Plugins can access the original HTTP request to retrieve headers, client IP, and metadata.
  type HTTPRequestKey struct{}
  
@@ -63,10 +63,13 @@ index 2f0746b0d..91ed1171a 100644
 +// by a plugin (e.g., the resolve plugin writing JSON). ServeHTTP will skip writing the DNS response.
 +type HTTPHandledKey struct{}
 +
- // connAddrKey is the context key for the per-connection local address set by ConnContext.
- type connAddrKey struct{}
- 
-@@ -193,6 +204,12 @@ func (s *ServerHTTPS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
++// connAddrKey is the context key for the per-connection local address set by ConnContext.
++type connAddrKey struct{}
++
+ // NewServerHTTPS returns a new CoreDNS HTTPS server and compiles all plugins in to it.
+ func NewServerHTTPS(addr string, group []*Config) (*ServerHTTPS, error) {
+ 	s, err := NewServer(addr, group)
+@@ -187,6 +201,12 @@ func (s *ServerHTTPS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
  		return
  	}
  
@@ -79,7 +82,7 @@ index 2f0746b0d..91ed1171a 100644
  	msg, raw, err := doh.RequestToMsgWire(r)
  	if err != nil {
  		http.Error(w, err.Error(), http.StatusBadRequest)
-@@ -200,6 +217,10 @@ func (s *ServerHTTPS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+@@ -194,6 +214,10 @@ func (s *ServerHTTPS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
  		return
  	}
  
@@ -90,7 +93,7 @@ index 2f0746b0d..91ed1171a 100644
  	// Create a DoHWriter with the correct addresses in it.
  	h, p, _ := net.SplitHostPort(r.RemoteAddr)
  	port, _ := strconv.Atoi(p)
-@@ -228,6 +249,7 @@ func (s *ServerHTTPS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+@@ -222,6 +246,7 @@ func (s *ServerHTTPS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
  	ctx := context.WithValue(r.Context(), Key{}, s.Server)
  	ctx = context.WithValue(ctx, LoopKey{}, 0)
  	ctx = context.WithValue(ctx, HTTPRequestKey{}, r)
@@ -98,7 +101,7 @@ index 2f0746b0d..91ed1171a 100644
  	s.ServeDNS(ctx, dw, msg)
  
  	// See section 4.2.1 of RFC 8484.
-@@ -257,6 +279,236 @@ func (s *ServerHTTPS) countResponse(status int) {
+@@ -251,6 +276,236 @@ func (s *ServerHTTPS) countResponse(status int) {
  	vars.HTTPSResponsesCount.WithLabelValues(s.Addr, strconv.Itoa(status)).Inc()
  }
  
@@ -336,7 +339,7 @@ index 2f0746b0d..91ed1171a 100644
  func (s *ServerHTTPS) Shutdown() error {
  	if s.httpsServer != nil {
 diff --git a/plugin.cfg b/plugin.cfg
-index a4fc637c0..72b3c7b35 100644
+index a4fc637c0..6aff67ffa 100644
 --- a/plugin.cfg
 +++ b/plugin.cfg
 @@ -29,6 +29,8 @@ quic:quic
